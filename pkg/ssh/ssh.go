@@ -52,7 +52,7 @@ func returnSSHError(provider *SSHProvider, command string) error {
 }
 
 func getSSHCommand(provider *SSHProvider) ([]string, error) {
-	result := []string{"-oStrictHostKeyChecking=no", "-oBatchMode=yes"}
+	result := []string{"-oStrictHostKeyChecking=no"}
 
 	if provider.Config.Port != "22" {
 		result = append(result, []string{"-p", provider.Config.Port}...)
@@ -84,6 +84,10 @@ func execSSHCommand(provider *SSHProvider, command string, output io.Writer) err
 		if hostname == "" || user == "" || port == "" {
 			return fmt.Errorf("resolve ssh config. Hostname='%s', User='%s', Port='%s'", hostname, user, port)
 		}
+		if identityfile == "" {
+			provider.Log.Debug("no identity file resolved for built-in ssh, falling back to openssh client")
+			return runOpenSSHCommand(provider, command, output)
+		}
 
 		// expand identityfile path
 		if strings.HasPrefix(identityfile, "~") {
@@ -92,11 +96,13 @@ func execSSHCommand(provider *SSHProvider, command string, output io.Writer) err
 		}
 		abs, err := filepath.Abs(identityfile)
 		if err != nil {
-			return fmt.Errorf("absolute filepath: %w", err)
+			provider.Log.Debug("failed to resolve identity file for built-in ssh, falling back to openssh client")
+			return runOpenSSHCommand(provider, command, output)
 		}
 		key, err := os.ReadFile(abs)
 		if err != nil {
-			return fmt.Errorf("read identifiyfile: %w", err)
+			provider.Log.Debug("failed to read identity file for built-in ssh, falling back to openssh client")
+			return runOpenSSHCommand(provider, command, output)
 		}
 
 		if provider.Config.Port != "" {
@@ -106,6 +112,11 @@ func execSSHCommand(provider *SSHProvider, command string, output io.Writer) err
 		addr := net.JoinHostPort(hostname, port)
 		client, err := ssh.NewSSHClient(user, addr, key)
 		if err != nil {
+			if strings.Contains(err.Error(), "parse private key") {
+				provider.Log.Debug("private key requires passphrase or is unsupported by built-in ssh, falling back to openssh client")
+				return runOpenSSHCommand(provider, command, output)
+			}
+
 			return fmt.Errorf("create ssh client: %w", err)
 		}
 		sess, err := client.NewSession()
@@ -118,6 +129,10 @@ func execSSHCommand(provider *SSHProvider, command string, output io.Writer) err
 		return sess.Run(command)
 	}
 
+	return runOpenSSHCommand(provider, command, output)
+}
+
+func runOpenSSHCommand(provider *SSHProvider, command string, output io.Writer) error {
 	commandToRun, err := getSSHCommand(provider)
 	if err != nil {
 		return err
@@ -195,7 +210,7 @@ func copyCommandToRemote(provider *SSHProvider, command string) (string, error) 
 }
 
 func getSCPCommand(provider *SSHProvider, sourcefile string) ([]string, error) {
-	result := []string{"-oStrictHostKeyChecking=no", "-oBatchMode=yes"}
+	result := []string{"-oStrictHostKeyChecking=no"}
 
 	if provider.Config.Port != "22" {
 		result = append(result, []string{"-p", provider.Config.Port}...)
